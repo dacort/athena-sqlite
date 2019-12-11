@@ -1,0 +1,64 @@
+FROM lambci/lambda:build-python3.7
+
+ENV PYTHON_VERSION=3.7.5
+ENV APACHE_ARROW_VERSION=0.15.1
+
+# Clone desired Arrow version
+RUN git clone \
+    --branch apache-arrow-$APACHE_ARROW_VERSION \
+    --single-branch \
+    https://github.com/apache/arrow.git
+
+# Install dependencies
+RUN yum install -y \
+    autoconf \
+    bison \
+    boost-devel \
+    flex \
+    jemalloc-devel \
+    python36-devel
+RUN pip install --upgrade six numpy pandas cython pytest cmake wheel
+
+# Build Arrow
+ENV ARROW_HOME=/var/task/dist
+ENV LD_LIBRARY_PATH=/var/task/dist/lib:$LD_LIBRARY_PATH
+RUN mkdir dist
+RUN mkdir arrow/cpp/build
+WORKDIR arrow/cpp/build
+RUN cmake \
+    -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DARROW_FLIGHT=OFF \
+    -DARROW_GANDIVA=OFF \
+    -DARROW_ORC=OFF \
+    -DARROW_PARQUET=ON \
+    -DARROW_PYTHON=ON \
+    -DARROW_PLASMA=OFF \
+    -DARROW_BUILD_TESTS=ON \
+    ..
+RUN make -j4
+RUN make install
+WORKDIR /var/task
+# Done building Arrow
+
+# Build Pyarrow
+ENV ARROW_PRE_0_15_IPC_FORMAT=1
+ENV PYARROW_WITH_FLIGHT=0
+ENV PYARROW_WITH_GANDIVA=0
+ENV PYARROW_WITH_ORC=0
+ENV PYARROW_WITH_PARQUET=1
+WORKDIR arrow/python
+RUN python setup.py build_ext \
+    --build-type=release \
+    --bundle-arrow-cpp \
+    bdist_wheel
+RUN cp dist/pyarrow-*.whl /var/task
+WORKDIR /var/task
+# Done building PyArrow
+
+# Extracting files
+RUN pip install pyarrow-*whl -t python/
+RUN zip -r9 "pyarrow_lite.zip" ./python
+
+# Building
+RUN ls -alF
