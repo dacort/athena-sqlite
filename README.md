@@ -71,7 +71,9 @@ Also include the `vfs.py` file in your Lambda function
 
 Configure two environment variables for your lambda function:
 - `TARGET_BUCKET` - The name of your S3 bucket where SQLite files live
-- `TARGET_PREFIX` - The prefix (e.g. `data/sqlite`) that you uploaded the sample sqlite database to 
+- `TARGET_PREFIX` - The prefix (e.g. `data/sqlite`) that you uploaded the sample sqlite database to
+
+Note that the IAM role you associate the function with will also need `s3:GetObject` and `s3:ListBucket` access to wherever your lovely SQLite databases are stored.
 
 ### Configure Athena
 
