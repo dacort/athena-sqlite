@@ -56,11 +56,11 @@ class ListTablesRequest:
         return {
             "@type": "ListTablesResponse",
             "catalogName": event['catalogName'],
-            "tables": tables,
+            "tables": self._fetch_table_list(sqlite_dbname, sqlite_vfs_path),
             "requestType": "LIST_TABLES"
         }
     
-    def _fetch_table_list(self, sqlite_path):
+    def _fetch_table_list(self, sqlite_dbname, sqlite_path):
         tables = []
         s3db=apsw.Connection(sqlite_path,
                        flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI,
@@ -69,6 +69,7 @@ class ListTablesRequest:
         for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"):
             print("Found table: ", row[0])
             tables.append({'schemaName': sqlite_dbname, 'tableName': row[0]})
+        return tables
 
 
 def lambda_handler(event, context):
