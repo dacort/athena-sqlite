@@ -3,44 +3,6 @@ import sys
 import boto3
 py3=sys.version_info >= (3, 0)
 
-def encryptme(data):
-    if not data: return data
-    if py3:
-        return bytes([x^0xa5 for x in data])
-    return "".join([chr(ord(x)^0xa5) for x in data])
-
-# Inheriting from a base of "" means the default vfs
-class ObfuscatedVFS(apsw.VFS):
-    def __init__(self, vfsname="obfu", basevfs=""):
-        self.vfsname=vfsname
-        self.basevfs=basevfs
-        apsw.VFS.__init__(self, self.vfsname, self.basevfs)
-
-    # We want to return our own file implmentation, but also
-    # want it to inherit
-    def xOpen(self, name, flags):
-        # We can look at uri parameters
-        if isinstance(name, apsw.URIFilename):
-            #@@CAPTURE
-            print ("fast is", name.uri_parameter("fast"))
-            print ("level is", name.uri_int("level", 3))
-            print ("warp is", name.uri_boolean("warp", False))
-            print ("notpresent is", name.uri_parameter("notpresent"))
-            #@@ENDCAPTURE
-        return ObfuscatedVFSFile(self.basevfs, name, flags)
-
-# The file implementation where we override xRead and xWrite to call our
-# encryption routine
-class ObfuscatedVFSFile(apsw.VFSFile):
-    def __init__(self, inheritfromvfsname, filename, flags):
-        apsw.VFSFile.__init__(self, inheritfromvfsname, filename, flags)
-
-    def xRead(self, amount, offset):
-        return encryptme(super(ObfuscatedVFSFile, self).xRead(amount, offset))
-
-    def xWrite(self, data, offset):
-        super(ObfuscatedVFSFile, self).xWrite(encryptme(data), offset)
-
 
 class S3VFS(apsw.VFS):
     def __init__(self, vfsname="s3", basevfs=""):

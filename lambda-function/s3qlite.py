@@ -1,5 +1,6 @@
 import pyarrow as pa
 import apsw
+import boto3
 from vfs import S3VFS, S3VFSFile
 
 import os
@@ -7,41 +8,77 @@ from uuid import uuid4
 import base64
 
 S3_BUCKET = os.environ['TARGET_BUCKET']
-S3_PREFIX = os.environ['TARGET_PREFIX']
+S3_PREFIX = os.environ['TARGET_PREFIX'].rstrip('/')  # Ensure that the prefix does *not* have a slash at the end
+
+S3_CLIENT = boto3.client('s3')
+S3FS = S3VFS()
 
 # https://github.com/awslabs/aws-athena-query-federation/blob/master/athena-federation-sdk/src/main/java/com/amazonaws/athena/connector/lambda/handlers/FederationCapabilities.java#L33
 CAPABILITIES = 23
 
-def lambda_handler(event, context):
-    print(event)
-    # request_type = event['requestType']
-    request_type = event['@type']
-    if request_type == 'ListSchemasRequest':
+
+class ListSchemasRequest:
+    """List sqlite files in the defined prefix, do not recurse"""
+    def execute(self, event):
         return {
             "@type": "ListSchemasResponse",
             "catalogName": event['catalogName'],
-            "schemas": [
-                "sample_data"
-            ],
+            "schemas": self._list_sqlite_objects(),
             "requestType": "LIST_SCHEMAS"
         }
-    elif request_type == 'ListTablesRequest':
-        tables = []
-        s3fs=S3VFS()
-        # s3db=apsw.Connection("file:sample_datadata.sqlite", vfs=s3fs.vfsname)
-        s3db=apsw.Connection("file:/{}/sample_data.sqlite?bucket={}".format(S3_PREFIX, S3_BUCKET),
-                       flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI,
-                       vfs=s3fs.vfsname)
-        cursor=s3db.cursor()
-        for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"):
-            print("Found table: ", row[0])
-            tables.append({'schemaName': event['schemaName'], 'tableName': row[0]})
+    
+    def _list_sqlite_objects(self):
+        # We don't yet support recursive listing - everything must be in the prefix
+        params = {
+            'Bucket': S3_BUCKET,
+            'Prefix': S3_PREFIX + '/',
+            'Delimiter': '/'
+        }
+        sqlite_filenames = []
+        while True:
+            response = S3_CLIENT.list_objects_v2(**params)
+            for data in response.get('Contents', []):
+                sqlite_basename = data['Key'].replace(S3_PREFIX + '/', '').replace('.sqlite', '')
+                sqlite_filenames.append(sqlite_basename)
+            if 'NextContinuationToken' in response:
+                params['ContinuationToken'] = response['NextContinuationToken']
+            else:
+                break
+        return sqlite_filenames
+
+
+class ListTablesRequest:
+    """Given a sqlite schema (filename), return the tables of the database"""
+    def execute(self, event):
+        sqlite_dbname = event.get('schemaName')
+        sqlite_vfs_path = "file:/{}/{}.sqlite?bucket={}".format(S3_PREFIX, sqlite_dbname, S3_BUCKET)
+
         return {
             "@type": "ListTablesResponse",
             "catalogName": event['catalogName'],
             "tables": tables,
             "requestType": "LIST_TABLES"
         }
+    
+    def _fetch_table_list(self, sqlite_path):
+        tables = []
+        s3db=apsw.Connection(sqlite_path,
+                       flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI,
+                       vfs=S3FS.vfsname)
+        cursor=s3db.cursor()
+        for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"):
+            print("Found table: ", row[0])
+            tables.append({'schemaName': sqlite_dbname, 'tableName': row[0]})
+
+
+def lambda_handler(event, context):
+    print(event)
+    # request_type = event['requestType']
+    request_type = event['@type']
+    if request_type == 'ListSchemasRequest':
+        return ListSchemasRequest().execute(event)
+    elif request_type == 'ListTablesRequest':
+        return ListTablesRequest().execute(event)
     elif request_type == 'GetTableRequest':
         databaseName = event['tableName']['schemaName']
         tableName = event['tableName']['tableName']
