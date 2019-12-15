@@ -2,6 +2,7 @@ import pyarrow as pa
 import apsw
 import boto3
 from vfs import S3VFS, S3VFSFile
+from sqlite_db import SQLiteDB
 
 import os
 from uuid import uuid4
@@ -51,25 +52,100 @@ class ListTablesRequest:
     """Given a sqlite schema (filename), return the tables of the database"""
     def execute(self, event):
         sqlite_dbname = event.get('schemaName')
-        sqlite_vfs_path = "file:/{}/{}.sqlite?bucket={}".format(S3_PREFIX, sqlite_dbname, S3_BUCKET)
 
         return {
             "@type": "ListTablesResponse",
             "catalogName": event['catalogName'],
-            "tables": self._fetch_table_list(sqlite_dbname, sqlite_vfs_path),
+            "tables": self._fetch_table_list(sqlite_dbname),
             "requestType": "LIST_TABLES"
         }
     
-    def _fetch_table_list(self, sqlite_dbname, sqlite_path):
+    def _fetch_table_list(self, sqlite_dbname):
         tables = []
-        s3db=apsw.Connection(sqlite_path,
-                       flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI,
-                       vfs=S3FS.vfsname)
-        cursor=s3db.cursor()
-        for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"):
+        s3db = SQLiteDB(S3_BUCKET, S3_PREFIX, sqlite_dbname)
+        for row in s3db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"):
             print("Found table: ", row[0])
             tables.append({'schemaName': sqlite_dbname, 'tableName': row[0]})
         return tables
+
+
+class GetTableRequest:
+    """Given a SQLite schema (filename) and table, return the schema"""
+    def execute(self, event):
+        databaseName = event['tableName']['schemaName']
+        tableName = event['tableName']['tableName']
+        columns = self._fetch_schema_for_table(databaseName, tableName)
+        schema = self._build_pyarrow_schema(columns)
+        print({
+            "@type": "GetTableResponse",
+            "catalogName": event['catalogName'],
+            "tableName": {'schemaName': databaseName, 'tableName': tableName},
+            "schema": {"schema": base64.b64encode(schema.serialize().slice(4)).decode("utf-8")},
+            "partitionColumns": [],
+            "requestType": "GET_TABLE"
+        })
+        return {
+            "@type": "GetTableResponse",
+            "catalogName": event['catalogName'],
+            "tableName": {'schemaName': databaseName, 'tableName': tableName},
+            "schema": {"schema": base64.b64encode(schema.serialize().slice(4)).decode("utf-8")},
+            "partitionColumns": [],
+            "requestType": "GET_TABLE"
+        }
+    
+    def _fetch_schema_for_table(self, databaseName, tableName):
+        columns = []
+        s3db = SQLiteDB(S3_BUCKET, S3_PREFIX, databaseName)
+        for row in s3db.execute("SELECT cid, name, type FROM pragma_table_info('{}')".format(tableName)):
+            columns.append([row[1], row[2]])
+        
+        return columns
+    
+    def _build_pyarrow_schema(self, columns):
+        """Return a pyarrow schema based on the SQLite data types, but for now ... everything is a string :)"""
+        return pa.schema(
+            [(col[0], pa.string()) for col in columns]
+        )
+
+
+class ReadRecordsRequest:
+    def execute(self, event):
+        schema = self._parse_schema(event['schema']['schema'])
+        records = {k: [] for k in schema.names}
+        sqlite_dbname = event['tableName']['schemaName']
+        sqlite_tablename = event['tableName']['tableName']
+        s3db = SQLiteDB(S3_BUCKET, S3_PREFIX, sqlite_dbname)
+
+        # TODO: How to select field names?
+        for row in s3db.execute("SELECT {} FROM {}".format(','.join(schema.names), sqlite_tablename)):
+            for i, name in enumerate(schema.names):
+                records[name].append(str(row[i]))
+
+        pa_records = pa.RecordBatch.from_arrays([pa.array(records[name]) for name in schema.names], schema=schema)
+        return {
+            "@type": "ReadRecordsResponse",
+            "catalogName": event['catalogName'],
+            "records": {
+                "aId": str(uuid4()),
+                "schema": base64.b64encode(schema.serialize().slice(4)).decode("utf-8"),
+                "records": base64.b64encode(pa_records.serialize().slice(4)).decode("utf-8")
+            },
+            "requestType": "READ_RECORDS"
+        }
+
+    def _parse_schema(self, encoded_schema):
+        return pa.read_schema(pa.BufferReader(base64.b64decode(encoded_schema)))
+
+class PingRequest:
+    """Simple ping request that just returns some metadata"""
+    def execute(self, event):
+        return {
+                    "@type": "PingResponse",
+                    "catalogName": event['catalogName'],
+                    "queryId": event['queryId'],
+                    "sourceType": "sqlite",
+                    "capabilities": CAPABILITIES
+                }
 
 
 def lambda_handler(event, context):
@@ -81,37 +157,9 @@ def lambda_handler(event, context):
     elif request_type == 'ListTablesRequest':
         return ListTablesRequest().execute(event)
     elif request_type == 'GetTableRequest':
-        databaseName = event['tableName']['schemaName']
-        tableName = event['tableName']['tableName']
-        # s3fs=S3VFS()
-        # s3db=apsw.Connection("file:sample_datadata.sqlite", vfs=s3fs.vfsname)
-        # cursor=s3db.cursor()
-        print("passing back faux table")
-        s = pa.schema([('year', pa.int64()), ('month', pa.int64()), ('day', pa.int64()), ('someval', pa.string())])
-        print({
-            "@type": "GetTableResponse",
-            "catalogName": event['catalogName'],
-            "tableName": {'schemaName': databaseName, 'tableName': tableName},
-            "schema": {"schema": base64.b64encode(s.serialize().slice(4)).decode("utf-8")},
-            "partitionColumns": [],
-            "requestType": "GET_TABLE"
-        })
-        return {
-            "@type": "GetTableResponse",
-            "catalogName": event['catalogName'],
-            "tableName": {'schemaName': databaseName, 'tableName': tableName},
-            "schema": {"schema": base64.b64encode(s.serialize().slice(4)).decode("utf-8")},
-            "partitionColumns": [],
-            "requestType": "GET_TABLE"
-        }
+        return GetTableRequest().execute(event)
     elif request_type == 'PingRequest':
-        return {
-            "@type": "PingResponse",
-            "catalogName": event['catalogName'],
-            "queryId": event['queryId'],
-            "sourceType": "sqlite",
-            "capabilities": CAPABILITIES
-        }
+        return PingRequest().execute(event)
     elif request_type == 'GetTableLayoutRequest':
         databaseName = event['tableName']['schemaName']
         tableName = event['tableName']['tableName']
@@ -168,36 +216,4 @@ def lambda_handler(event, context):
             "requestType": "GET_SPLITS"
         }
     elif request_type == 'ReadRecordsRequest':
-        records = {
-            'year': [],
-            'month': [],
-            'day': [],
-            'someval': []
-        }
-        # NEed a response builder
-        # May do a table first and convert to recordbatch?
-        # https://stackoverflow.com/questions/57939092/fastest-way-to-construct-pyarrow-table-row-by-row
-        s3fs=S3VFS()
-        # s3db=apsw.Connection("file:sample_datadata.sqlite", vfs=s3fs.vfsname)
-        s3db=apsw.Connection("file:/{}/sample_data.sqlite?bucket={}".format(S3_PREFIX, S3_BUCKET),
-                       flags=apsw.SQLITE_OPEN_READONLY | apsw.SQLITE_OPEN_URI,
-                       vfs=s3fs.vfsname)
-        cursor=s3db.cursor()
-        for row in cursor.execute("SELECT * FROM records"):
-            records['year'].append(row[0])
-            records['month'].append(row[1])
-            records['day'].append(row[2])
-            records['someval'].append(row[3])
-
-        schema = pa.schema([('year', pa.int64()), ('month', pa.int64()), ('day', pa.int64()), ('someval', pa.string())])
-        records = pa.RecordBatch.from_arrays([pa.array(records['year']), pa.array(records['month']), pa.array(records['day']), pa.array(records['someval'])], schema=schema)
-        return {
-            "@type": "ReadRecordsResponse",
-            "catalogName": event['catalogName'],
-            "records": {
-                "aId": str(uuid4()),
-                "schema": base64.b64encode(schema.serialize().slice(4)).decode("utf-8"),
-                "records": base64.b64encode(records.serialize().slice(4)).decode("utf-8")
-            },
-            "requestType": "READ_RECORDS"
-        }
+        return ReadRecordsRequest().execute(event)

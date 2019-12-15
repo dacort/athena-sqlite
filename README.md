@@ -18,10 +18,9 @@ The PyArrow library unfortunately weighs in over 250MB, so we have to use a cust
 
 ## What?
 
-The goal is to be able to have this driver list sqlite databases in a configurable S3 bucket and prefix. 
-Each database file would show up as a separate database in the Athena GUI with the subset of tables per database.
+Drop SQLite databases in a single prefix in S3, and Athena will list each file as a database and automatically detect tables and schemas.
 
-Currently, we just use a slightly hardcoded sample database. All good things in time.
+Currently, all data types are strings. I'll fix this eventually.  All good things in time.
 
 ## Status
 
@@ -58,6 +57,8 @@ For the purpose of this test, we just have a sample sqlite database you can uplo
 
 `aws s3 cp sample-data/sample_data.sqlite s3://<TARGET_BUCKET>/<TARGET_PREFIX>/`
 
+Feel free to upload your own SQLite databases as well!
+
 ### Lambda function
 
 There are two components to the Lambda code:
@@ -92,3 +93,15 @@ SELECT * FROM "s3qlite"."sample_data"."records" limit 10;
 
 SELECT COUNT(*) FROM "s3qlite"."sample_data"."records";
 ```
+
+## TODO
+
+- Move these into issues :)
+- Move vfs.py into it's own module
+    - Maybe add write support to it someday :scream:
+- Publish to SAR
+- Add tests...always tests
+- struct types, probably
+- Don't read the entire file every time :)
+- Escape column names with invalid characters
+- Implement recursive listing
