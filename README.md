@@ -2,6 +2,8 @@
 
 Using Athena's new [Query Federation](https://github.com/awslabs/aws-athena-query-federation/) functionality, read SQLite databases from S3.
 
+Install it from the Serverless Application Repository: [AthenaSQLiteConnector](https://serverlessrepo.aws.amazon.com/#/applications/arn:aws:serverlessrepo:us-east-1:689449560910:applications~AthenaSQLITEConnector).
+
 ## Why?
 
 I occasionally like to put together fun side projects over Thanksgiving and Christmas holidays.
@@ -30,6 +32,9 @@ Many things are hard-coded or broken into various pieces as I experiment and fig
 
 ## Building
 
+The documentation for this is a work in progress. It's currently in between me creating the resources manually and building the assets for the AWS SAR,
+and most of the docs will be automated away.
+
 ### Requirements
 
 - Docker
@@ -37,19 +42,16 @@ Many things are hard-coded or broken into various pieces as I experiment and fig
 
 ### Lambda layer
 
-First you need to build and upload the Lambda layer. There are two Dockerfiles and build scripts in the `lambda-layer/` directory.
+First you need to build Lambda layer. There are two Dockerfiles and build scripts in the `lambda-layer/` directory.
+
+We'll execute each of the build scripts and copy the results to the target directory. This is referenced by the SAR template, [`athena-sqlite.yaml`](athena-sqlite.yaml).
 
 ```
 cd lambda-layer
 ./build.sh
 ./build-pyarrow.sh
-cd layer
-zip -r python_libs.zip python
-aws s3 cp python_libs.zip s3://<BUCKET>/lambda/layers/apsw/
+cp -R layer/ ../target/
 ```
-
-Once you've done that, create a new Lambda layer that points to `https://<BUCKET>.s3.amazonaws.com/lambda/layers/apsw/python_libs.zip`.
-Choose `Python 3.7` as a compatible runtime.
 
 ### Upload sample data
 
@@ -61,14 +63,15 @@ Feel free to upload your own SQLite databases as well!
 
 ### Lambda function
 
-There are two components to the Lambda code:
+There are three components to the Lambda code:
 
 - `vfs.py` - A SQLite Virtual File System implementation for S3
 - `s3qlite.py` - The actual Lambda function that handles Athena metadata/data requests
+- `sqlite_db.py` - Helper functions for access SQLite databases on S3
 
 Create a function with the code in [lambda-function/s3qlite.py](lambda-function/s3qlite.py) that uses the previously created layer.
 The handler will be `s3qlite.lambda_handler`
-Also include the `vfs.py` file in your Lambda function
+Also include the `vfs.py` and `sqlite_db.py` files in your Lambda function
 
 Configure two environment variables for your lambda function:
 - `TARGET_BUCKET` - The name of your S3 bucket where SQLite files live
@@ -94,6 +97,14 @@ SELECT * FROM "s3qlite"."sample_data"."records" limit 10;
 SELECT COUNT(*) FROM "s3qlite"."sample_data"."records";
 ```
 
+If you deploy the SAR app, the data catalog isn't registered automatically, but you can still run queries by using the special `lambda:` schema:
+
+```sql
+SELECT * FROM "lambda:s3qlite".sample_data.records LIMIT 10;
+```
+
+Where `s3qlite` is the value you provided for the `AthenaCatalogName` parameter.
+
 ## TODO
 
 - Move these into issues :)
@@ -105,3 +116,38 @@ SELECT COUNT(*) FROM "s3qlite"."sample_data"."records";
 - Don't read the entire file every time :)
 - Escape column names with invalid characters
 - Implement recursive listing
+
+## Serverless App Repo
+
+These are mostly notes I made while figuring out how to get SAR working.
+
+Need to grant SAR access to the bucket
+
+```shell
+aws s3api put-bucket-policy --bucket <BUCKET> --region us-east-1 --policy '{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service":  "serverlessrepo.amazonaws.com"
+      },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::<BUCKET>/*"
+    }
+  ]
+}'
+```
+
+For publishing to the SAR, we just execute two commands
+
+```shell
+sam package --template-file athena-sqlite.yaml --s3-bucket <BUCKET> --output-template-file target/out.yaml
+sam publish --template target/out.yaml --region us-east-1
+```
+
+If you want to deploy using CloudFormation, use this command:
+
+```shell
+sam deploy --template-file ./target/out.yaml --stack-name athena-sqlite --capabilities CAPABILITY_IAM --parameter-overrides 'DataBucket=<BUCKET> DataPrefix=tmp/sqlite' --region us-east-1
+```

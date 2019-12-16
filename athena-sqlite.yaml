@@ -1,0 +1,66 @@
+Transform: 'AWS::Serverless-2016-10-31'
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: AthenaSQLITEConnector
+    Description: Use Amazon Athena to query SQLite databases on Amazon S3
+    Author: 'Damon Cortesi'
+    SpdxLicenseId: Apache-2.0
+    LicenseUrl: LICENSE
+    ReadmeUrl: README.md
+    Labels: ['athena-federation', 'sqlite']
+    HomePageUrl: https://github.com/dacort/athena-sqlite
+    SemanticVersion: 0.0.3
+    SourceCodeUrl: https://github.com/dacort/athena-sqlite
+
+Parameters:
+    AthenaCatalogName:
+        Description: "The name you will give to this catalog in Athena will also be used as you Lambda function name."
+        Type: String
+        Default: s3qlite
+    DataBucket:
+        Description: "The bucket where this tutorial's data lives."
+        Type: String
+    DataPrefix:
+        Description: "The prefix where SQLite databases are."
+        Type: String
+    LambdaTimeout:
+        Description: "Maximum Lambda invocation runtime in seconds. (min 1 - 900 max)"
+        Default: 300
+        Type: Number
+    LambdaMemory:
+        Description: "Lambda memory in MB (min 128 - 3008 max)."
+        Default: 512
+        Type: Number
+
+Resources:
+    ConnectorConfig:
+        Type: 'AWS::Serverless::Function'
+        Properties:
+            Environment:
+                Variables:
+                    TARGET_BUCKET: !Ref DataBucket
+                    TARGET_PREFIX: !Ref DataPrefix
+            FunctionName: !Sub "${AthenaCatalogName}"
+            Handler: "s3qlite.lambda_handler"
+            Layers:
+                - !Ref SQLiteDependencyLayer
+            CodeUri: "./target/athena-sqlite-0.0.1.zip"
+            Description: "Use Amazon Athena to query SQLite databases on Amazon S3."
+            Runtime: python3.7
+            Timeout: !Ref LambdaTimeout
+            MemorySize: !Ref LambdaMemory
+            Policies:
+                - S3ReadPolicy:
+                    BucketName: !Ref DataBucket
+
+    SQLiteDependencyLayer:
+        Type: 'AWS::Serverless::LayerVersion'
+        Properties:
+            LayerName: sam-app-dependencies
+            Description: Dependencies for sam app athena-sqlite
+            ContentUri: "./target/layer/"
+            CompatibleRuntimes:
+                - python3.7
+            LicenseInfo: 'MIT'
+            RetentionPolicy: Retain
